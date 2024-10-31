@@ -379,6 +379,24 @@ kb_pop(Machine *m)
 	return m->kb_buf[m->kb_tail++ & 0x3f];
 }
 
+static void
+reset(Machine *m)
+{
+	m->map[0] = m->rom;
+	m->map[1] = m->rom;
+	m->map[2] = m->rom;
+	m->map[3] = m->rom;
+
+	m->uart_status = TXRDY;
+
+	m->ppi_a = 0xff;
+	m->ppi_b = 0xff;
+	m->ppi_c = 0x01;
+
+	m->kb_head = 0;
+	m->kb_tail = sizeof(m->kb_buf);
+}
+
 enum{
 	FDS_CPU,
 	FDS_PTY,
@@ -392,7 +410,7 @@ main(int argc, char *argv[])
 	i8080 cpu;
 	Machine	machine;
 	Machine *m;
-	int romfd, cffd, ret, pitch, x, y;
+	int romfd, cffd, ret, pitch, x, y, buttonid;
 	struct pollfd fds[NFDS];
 	uint64_t val;
 	struct itimerspec it;
@@ -406,6 +424,8 @@ main(int argc, char *argv[])
 	Uint32 *pixels;
 	uint8_t *plane, *src;
 	uint8_t b;
+	SDL_MessageBoxData messageboxdata;
+	SDL_MessageBoxButtonData buttons[3];
 
 	if(argc < 3){
 		fprintf(stderr, "usage: %s romfile cffile\n", argv[0]);
@@ -438,19 +458,7 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	m->map[0] = m->rom;
-	m->map[1] = m->rom;
-	m->map[2] = m->rom;
-	m->map[3] = m->rom;
-
-	m->uart_status = TXRDY;
-
-	m->ppi_a = 0xff;
-	m->ppi_b = 0xff;
-	m->ppi_c = 0;
-
-	m->kb_head = 0;
-	m->kb_tail = sizeof(m->kb_buf);
+	reset(m);
 
 	cffd = open(argv[2], O_RDWR);
 	if(cffd < 0){
@@ -570,12 +578,38 @@ main(int argc, char *argv[])
 				m->ppi_c |= VINT;
 
 			while(SDL_PollEvent(&event)){
-				if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
+				if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP){
 					kb_push(m, xlat[event.key.keysym.scancode] | (~event.key.state << 7));
-				else if(event.type == SDL_QUIT)
-					break;
+				}else if(event.type == SDL_QUIT){
+					messageboxdata.flags = 0;
+					messageboxdata.window = NULL;
+					messageboxdata.title = "Dialog";
+					messageboxdata.message = "Leave?";
+					messageboxdata.numbuttons = 3;
+					buttons[0].flags = SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT;
+					buttons[0].buttonid = 0;
+					buttons[0].text = "Quit";
+					buttons[1].flags = 0;
+					buttons[1].buttonid = 1;
+					buttons[1].text = "Reset";
+					buttons[2].flags = SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT;
+					buttons[2].buttonid = 2;
+					buttons[2].text = "Cancel";
+					messageboxdata.buttons = buttons;
+					messageboxdata.colorScheme = NULL;
+					ret = SDL_ShowMessageBox(&messageboxdata, &buttonid);
+					if(ret != 0 || buttonid == 0){
+						break;
+					}else if(buttonid == 1){
+						reset(m);
+						cpu.pc = 0;
+						cpu.iff = 0;
+						cpu.halted = 0;
+						cpu.interrupt_pending = 0;
+					}
+				}
 			}
-			if(event.type == SDL_QUIT)
+			if(event.type == SDL_QUIT && buttonid == 0)
 				break;
 
 			SDL_LockTexture(texture, NULL, (void **)&pixels, &pitch);
