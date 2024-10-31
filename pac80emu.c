@@ -84,6 +84,7 @@ port_in(void *userdata, uint8_t port)
 		switch(port & 1){
 		case 0:	/* data */
 			m->uart_status &= ~RXRDY;
+			m->ppi_c &= ~UINT;
 			return m->uart_rx;
 		case 1: /* status */
 			return m->uart_status;
@@ -127,8 +128,6 @@ port_in(void *userdata, uint8_t port)
 		case 1: /* port b */
 			return m->ppi_b;
 		case 4: /* port c */
-			m->ppi_c &= ~UINT;
-			m->ppi_c |= ((m->uart_status & RXRDY) << 6) & ((m->ppi_c & UINTE) << 5);
 			d = m->ppi_c;
 			m->ppi_c &= ~VINT;
 			return d;
@@ -214,6 +213,7 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 			}
 			break;
 		}
+		break;
 	case 0x18:	/* PPI */
 		switch(port & 5){
 		case 0: /* port a */
@@ -221,6 +221,8 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 			break;
 		case 4: /* port c */
 			m->ppi_c = (m->ppi_c & 0xe8) | (val & 0x17);
+			m->ppi_c &= ~UINT;
+			m->ppi_c |= ((m->uart_status & RXRDY) << 6) & ((m->ppi_c & UINTE) << 5);
 			break;
 		case 5: /* control */
 			if((val & 0x80) == 0){
@@ -230,6 +232,8 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 				else
 					val = m->ppi_c & ~bit;
 				m->ppi_c = (m->ppi_c & 0xe8) | (val & 0x17);
+				m->ppi_c &= ~UINT;
+				m->ppi_c |= ((m->uart_status & RXRDY) << 6) & ((m->ppi_c & UINTE) << 5);
 			}
 			break;
 		}
@@ -524,6 +528,10 @@ main(int argc, char *argv[])
 				if(cpu.iff && (m->ppi_c & (KINT | VINT | UINT)))
 					i8080_interrupt(&cpu, 0xff);
 				i8080_step(&cpu);
+				if(cpu.halted){
+					cpu.cyc = 1007;
+					break;
+				}
 			}
 			cpu.cyc -= 1007;
 			if(!(m->ppi_c & KIBF) && kb_count(m)){
@@ -548,8 +556,11 @@ main(int argc, char *argv[])
 
 		if(fds[FDS_PTY].revents & POLLIN){
 			ret = read(fds[FDS_PTY].fd, &m->uart_rx, 1);
-			if(ret > 0)
+			if(ret > 0){
 				m->uart_status |= RXRDY;
+				if(m->ppi_c & UINTE)
+					m->ppi_c |= UINT;
+			}
 		}
 
 		if(fds[FDS_SDL].revents & POLLIN){
@@ -568,7 +579,7 @@ main(int argc, char *argv[])
 				break;
 
 			SDL_LockTexture(texture, NULL, (void **)&pixels, &pitch);
-			plane = m->ram + ((m->ppi_c & 1) ? 0x19810 : 0x11810);
+			plane = m->ram + ((m->ppi_c & VA15) ? 0x19810 : 0x11810);
 			for(y = 0; y < 240; y++)
 				for(x = 0, src = plane + y; x < 320; x += 8, src += 0x100)
 					for(b = 0x80; b != 0; b >>= 1)
@@ -578,7 +589,7 @@ main(int argc, char *argv[])
 			SDL_RenderCopy(renderer, texture, NULL, NULL);
 
 			SDL_LockTexture(texture, NULL, (void **)&pixels, &pitch);
-			plane = m->ram + ((m->ppi_c & 1) ? 0x1d810 : 0x15810);
+			plane = m->ram + ((m->ppi_c & VA15) ? 0x1d810 : 0x15810);
 			for(y = 0; y < 240; y++)
 				for(x = 0, src = plane + y; x < 320; x += 8, src += 0x100)
 					for(b = 0x80; b != 0; b >>= 1)
