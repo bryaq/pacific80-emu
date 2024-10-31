@@ -13,6 +13,18 @@
 
 #include "8080/i8080.h"
 
+#define VA15  (1 << 0)
+#define VINTE (1 << 1)
+#define UINTE (1 << 2)
+#define KINT  (1 << 3)
+#define KSTB  (1 << 4)
+#define KINTE (1 << 4)
+#define KIBF  (1 << 5)
+#define VINT  (1 << 6)
+#define UINT  (1 << 7)
+#define TXRDY (1 << 0)
+#define RXRDY (1 << 1)
+
 typedef struct Machine Machine;
 struct Machine{
 	uint8_t *ram;
@@ -71,7 +83,7 @@ port_in(void *userdata, uint8_t port)
 	case 0x28:	/* UART */
 		switch(port & 1){
 		case 0:	/* data */
-			m->uart_status &= ~2;
+			m->uart_status &= ~RXRDY;
 			return m->uart_rx;
 		case 1: /* status */
 			return m->uart_status;
@@ -110,12 +122,16 @@ port_in(void *userdata, uint8_t port)
 	case 0x18:	/* PPI */
 		switch(port & 5){
 		case 0: /* port a */
-			m->ppi_c &= ~(1 << 5);
+			m->ppi_c &= ~(KIBF | KINT);
 			return m->ppi_a;
 		case 1: /* port b */
 			return m->ppi_b;
 		case 4: /* port c */
-			return m->ppi_c;
+			m->ppi_c &= ~UINT;
+			m->ppi_c |= ((m->uart_status & RXRDY) << 6) & ((m->ppi_c & UINTE) << 5);
+			d = m->ppi_c;
+			m->ppi_c &= ~VINT;
+			return d;
 		case 5: /* illegal */
 			break;
 		}
@@ -146,7 +162,7 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 	case 0x28:	/* UART */
 		switch(port & 1){
 		case 0:	/* data */
-			m->uart_status &= ~1;
+			m->uart_status &= ~TXRDY;
 			m->uart_tx = val;
 			break;
 		case 1: /* control */
@@ -423,7 +439,7 @@ main(int argc, char *argv[])
 	m->map[2] = m->rom;
 	m->map[3] = m->rom;
 
-	m->uart_status = 1;
+	m->uart_status = TXRDY;
 
 	m->ppi_a = 0xff;
 	m->ppi_b = 0xff;
@@ -504,12 +520,17 @@ main(int argc, char *argv[])
 
 		if(fds[FDS_CPU].revents & POLLIN){
 			ret = read(fds[FDS_CPU].fd, &val, sizeof(val));
-			while(cpu.cyc < 1007)
+			while(cpu.cyc < 1007){
+				if(cpu.iff && (m->ppi_c & (KINT | VINT | UINT)))
+					i8080_interrupt(&cpu, 0xff);
 				i8080_step(&cpu);
+			}
 			cpu.cyc -= 1007;
-			if(!(m->ppi_c & (1 << 5)) && kb_count(m)){
+			if(!(m->ppi_c & KIBF) && kb_count(m)){
 				m->ppi_a = kb_pop(m);
-				m->ppi_c |= (1 << 5);
+				m->ppi_c |= KIBF;
+				if(m->ppi_c & KINTE)
+					m->ppi_c |= KINT;
 			}
 		}
 
@@ -520,19 +541,23 @@ main(int argc, char *argv[])
 			puts(ptsname(fds[FDS_PTY].fd));
 		}
 
-		if((m->uart_status & 1) == 0){
+		if((m->uart_status & TXRDY) == 0){
 			ret = write(fds[FDS_PTY].fd, &m->uart_tx, 1);
-			m->uart_status |= 1;
+			m->uart_status |= TXRDY;
 		}
 
 		if(fds[FDS_PTY].revents & POLLIN){
 			ret = read(fds[FDS_PTY].fd, &m->uart_rx, 1);
 			if(ret > 0)
-				m->uart_status |= 2;
+				m->uart_status |= RXRDY;
 		}
 
 		if(fds[FDS_SDL].revents & POLLIN){
 			ret = read(fds[FDS_SDL].fd, &val, sizeof(val));
+
+			if(m->ppi_c & VINTE)
+				m->ppi_c |= VINT;
+
 			while(SDL_PollEvent(&event)){
 				if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP)
 					kb_push(m, xlat[event.key.keysym.scancode] | (~event.key.state << 7));
