@@ -29,6 +29,7 @@ It will print pseudoterminal device name if you wish to connect to computer's se
 # TODO
 
 - [x] interrupts
-- [ ] SN76489 PSG
+- [x] SN76489A
 - [ ] joystick
 - [x] reset
+- [ ] XMODEM

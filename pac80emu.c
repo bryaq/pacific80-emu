@@ -12,6 +12,7 @@
 #include <SDL2/SDL.h>
 
 #include "8080/i8080.h"
+#include "emu76489/emu76489.h"
 
 #define VA15  (1 << 0)
 #define VINTE (1 << 1)
@@ -45,6 +46,7 @@ struct Machine{
 	uint8_t kb_buf[64];
 	uint8_t kb_head;
 	uint8_t kb_tail;
+	SNG *sng;
 };
 
 static uint8_t
@@ -238,6 +240,8 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 			break;
 		}
 	case 0x38:	/* PSG */
+		SNG_writeIO(m->sng, val);
+		break;
 	case 0x00:	/* EXT0 */
 	case 0x10:	/* EXT1 */
 	case 0x20:	/* EXT2 */
@@ -397,6 +401,15 @@ reset(Machine *m)
 	m->kb_tail = sizeof(m->kb_buf);
 }
 
+void
+audio_cb(void *userdata, uint8_t *stream, int len)
+{
+	Machine *m = userdata;
+
+	for(; len > 0; len -= 2, stream += 2)
+		*(int16_t *)stream = SNG_calc(m->sng);
+}
+
 enum{
 	FDS_CPU,
 	FDS_PTY,
@@ -426,6 +439,8 @@ main(int argc, char *argv[])
 	uint8_t b;
 	SDL_MessageBoxData messageboxdata;
 	SDL_MessageBoxButtonData buttons[3];
+	SDL_AudioSpec want = {0}, have;
+	SDL_AudioDeviceID audiodev;
 
 	if(argc < 3){
 		fprintf(stderr, "usage: %s romfile cffile\n", argv[0]);
@@ -486,7 +501,7 @@ main(int argc, char *argv[])
 	unlockpt(fds[FDS_PTY].fd);
 	puts(ptsname(fds[FDS_PTY].fd));
 
-	if(SDL_Init(SDL_INIT_VIDEO) != 0){
+	if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0){
 		SDL_Log("SDL_Init(): %s", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
@@ -514,6 +529,25 @@ main(int argc, char *argv[])
 		SDL_Log("SDL_CreateTexture(): %s", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
+
+	want.freq = 44100;
+	want.format = AUDIO_S16SYS;
+	want.channels = 1;
+	want.samples = 128;
+	want.callback = audio_cb;
+	want.userdata = m;
+	audiodev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+	if(audiodev == 0){
+		SDL_Log("SDL_OpenAudioDevice(): %s", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
+	m->sng = SNG_new(3146875, have.freq);
+	if(m->sng == NULL){
+		perror("SNG_new()");
+		exit(EXIT_FAILURE);
+	}
+	SNG_set_quality(m->sng, 0);
+	SDL_PauseAudioDevice(audiodev, 0);
 
 	fds[FDS_SDL].fd = timerfd_create(CLOCK_MONOTONIC, 0);
 	fds[FDS_SDL].events = POLLIN;
@@ -634,6 +668,8 @@ main(int argc, char *argv[])
 			SDL_RenderPresent(renderer);
 		}
 	}
+	SDL_CloseAudioDevice(audiodev);
+	SNG_delete(m->sng);
 	SDL_DestroyTexture(texture);
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(window);

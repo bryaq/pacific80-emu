@@ -1,3 +1,6 @@
 [submodule "8080"]
 	path = 8080
 	url = https://github.com/superzazu/8080.git
+[submodule "emu76489"]
+	path = emu76489
+	url = https://github.com/bryaq/emu76489.git
