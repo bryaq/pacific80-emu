@@ -26,6 +26,14 @@
 #define TXRDY (1 << 0)
 #define RXRDY (1 << 1)
 
+typedef struct FIFO FIFO;
+struct FIFO{
+	uint8_t buf[256];
+	uint16_t head;
+	uint16_t tail;
+	uint8_t s;
+};
+
 typedef struct Machine Machine;
 struct Machine{
 	uint8_t *ram;
@@ -34,6 +42,7 @@ struct Machine{
 	uint8_t uart_rx;
 	uint8_t uart_tx;
 	uint8_t uart_status;
+	FIFO uart_fifo;
 	uint16_t cf_scount;
 	uint16_t cf_bcount;
 	uint32_t cf_lba;
@@ -43,11 +52,34 @@ struct Machine{
 	uint8_t ppi_a;
 	uint8_t ppi_b;
 	uint8_t ppi_c;
-	uint8_t kb_buf[64];
-	uint8_t kb_head;
-	uint8_t kb_tail;
+	FIFO kb_fifo;
 	SNG *sng;
 };
+
+static inline uint16_t
+fifo_space(FIFO *f)
+{
+	return f->tail - f->head;
+}
+
+static inline uint16_t
+fifo_count(FIFO *f)
+{
+	return (sizeof(f->buf) >> f->s) - fifo_space(f);
+}
+
+static inline void
+fifo_push(FIFO *f, uint8_t data)
+{
+	if(fifo_space(f))
+		f->buf[f->head++ & ((sizeof(f->buf) >> f->s) - 1)] = data;
+}
+
+static inline uint8_t
+fifo_pop(FIFO *f)
+{
+	return f->buf[f->tail++ & ((sizeof(f->buf) >> f->s) - 1)];
+}
 
 static uint8_t
 read_byte(void *userdata, uint16_t addr)
@@ -85,9 +117,16 @@ port_in(void *userdata, uint8_t port)
 	case 0x28:	/* UART */
 		switch(port & 1){
 		case 0:	/* data */
+			d = m->uart_rx;
 			m->uart_status &= ~RXRDY;
 			m->ppi_c &= ~UINT;
-			return m->uart_rx;
+			if(fifo_count(&m->uart_fifo)){
+				m->uart_rx = fifo_pop(&m->uart_fifo);
+				m->uart_status |= RXRDY;
+				if(m->ppi_c & UINTE)
+					m->ppi_c |= UINT;
+			}
+			return d;
 		case 1: /* status */
 			return m->uart_status;
 		}
@@ -358,31 +397,6 @@ static const uint8_t xlat[SDL_NUM_SCANCODES] = {
 	[SDL_SCANCODE_RGUI]         = 0x5c,
 };
 
-static inline uint8_t
-kb_space(Machine *m)
-{
-	return m->kb_tail - m->kb_head;
-}
-
-static inline uint8_t
-kb_count(Machine *m)
-{
-	return sizeof(m->kb_buf) - kb_space(m);
-}
-
-static inline void
-kb_push(Machine *m, uint8_t data)
-{
-	if(kb_space(m))
-		m->kb_buf[m->kb_head++ & 0x3f] = data;
-}
-
-static inline uint8_t
-kb_pop(Machine *m)
-{
-	return m->kb_buf[m->kb_tail++ & 0x3f];
-}
-
 static void
 reset(Machine *m)
 {
@@ -392,13 +406,15 @@ reset(Machine *m)
 	m->map[3] = m->rom;
 
 	m->uart_status = TXRDY;
+	m->uart_fifo.head = 0;
+	m->uart_fifo.tail = sizeof(m->uart_fifo.buf) >> m->uart_fifo.s;
 
 	m->ppi_a = 0xff;
 	m->ppi_b = 0xff;
 	m->ppi_c = 0x01;
 
-	m->kb_head = 0;
-	m->kb_tail = sizeof(m->kb_buf);
+	m->kb_fifo.head = 0;
+	m->kb_fifo.tail = sizeof(m->kb_fifo.buf) >> m->kb_fifo.s;
 }
 
 void
@@ -472,6 +488,9 @@ main(int argc, char *argv[])
 		perror("mmap()");
 		exit(EXIT_FAILURE);
 	}
+
+	m->kb_fifo.s = 2;
+	m->uart_fifo.s = 0;
 
 	reset(m);
 
@@ -576,8 +595,8 @@ main(int argc, char *argv[])
 				}
 			}
 			cpu.cyc -= 1007;
-			if(!(m->ppi_c & KIBF) && kb_count(m)){
-				m->ppi_a = kb_pop(m);
+			if(!(m->ppi_c & KIBF) && fifo_count(&m->kb_fifo)){
+				m->ppi_a = fifo_pop(&m->kb_fifo);
 				m->ppi_c |= KIBF;
 				if(m->ppi_c & KINTE)
 					m->ppi_c |= KINT;
@@ -597,11 +616,15 @@ main(int argc, char *argv[])
 		}
 
 		if(fds[FDS_PTY].revents & POLLIN){
-			ret = read(fds[FDS_PTY].fd, &m->uart_rx, 1);
+			ret = read(fds[FDS_PTY].fd, &b, 1);
 			if(ret > 0){
-				m->uart_status |= RXRDY;
-				if(m->ppi_c & UINTE)
-					m->ppi_c |= UINT;
+				fifo_push(&m->uart_fifo, b);
+				if((m->uart_status & RXRDY) == 0){
+					m->uart_rx = fifo_pop(&m->uart_fifo);
+					m->uart_status |= RXRDY;
+					if(m->ppi_c & UINTE)
+						m->ppi_c |= UINT;
+				}
 			}
 		}
 
@@ -613,7 +636,8 @@ main(int argc, char *argv[])
 
 			while(SDL_PollEvent(&event)){
 				if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP){
-					kb_push(m, xlat[event.key.keysym.scancode] | (~event.key.state << 7));
+					fifo_push(&m->kb_fifo,
+					          xlat[event.key.keysym.scancode] | (~event.key.state << 7));
 				}else if(event.type == SDL_QUIT){
 					messageboxdata.flags = 0;
 					messageboxdata.window = NULL;

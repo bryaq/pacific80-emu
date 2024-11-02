@@ -32,4 +32,4 @@ It will print pseudoterminal device name if you wish to connect to computer's se
 - [x] SN76489A
 - [ ] joystick
 - [x] reset
-- [ ] XMODEM
+- [x] XMODEM
