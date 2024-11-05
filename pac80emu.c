@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
@@ -25,6 +26,26 @@
 #define UINT  (1 << 7)
 #define TXRDY (1 << 0)
 #define RXRDY (1 << 1)
+#define UP    (1 << 0)
+#define DOWN  (1 << 1)
+#define LEFT  (1 << 2)
+#define RIGHT (1 << 3)
+#define AB    (1 << 4)
+#define STRTC (1 << 5)
+#define SEL   (1 << 6)
+
+#define BUTTON_U (1 << 0)
+#define BUTTON_D (1 << 1)
+#define BUTTON_L (1 << 2)
+#define BUTTON_R (1 << 3)
+#define BUTTON_B (1 << 5)
+#define BUTTON_C (1 << 4)
+#define BUTTON_A (1 << 6)
+#define BUTTON_S (1 << 7)
+#define BUTTON_Z (1 << 8)
+#define BUTTON_Y (1 << 9)
+#define BUTTON_X (1 << 10)
+#define BUTTON_M (1 << 11)
 
 typedef struct FIFO FIFO;
 struct FIFO{
@@ -54,6 +75,25 @@ struct Machine{
 	uint8_t ppi_c;
 	FIFO kb_fifo;
 	SNG *sng;
+	uint16_t js_buttons;
+	uint8_t js_state;
+	uint8_t js_timer;
+};
+
+static const uint8_t js_guid[] = {
+	0x05, 0x00, 0x00, 0x00, 0x4c, 0x05, 0x00, 0x00,
+	0xc4, 0x05, 0x00, 0x00, 0x00, 0x81, 0x00, 0x00
+};
+
+static const uint16_t js_map[] = {
+	[0] = BUTTON_B,
+	[1] = BUTTON_C,
+	[2] = BUTTON_Y,
+	[3] = BUTTON_A,
+	[4] = BUTTON_X,
+	[5] = BUTTON_Z,
+	[8] = BUTTON_M,
+	[9] = BUTTON_S,
 };
 
 static inline uint16_t
@@ -167,7 +207,66 @@ port_in(void *userdata, uint8_t port)
 			m->ppi_c &= ~(KIBF | KINT);
 			return m->ppi_a;
 		case 1: /* port b */
-			return m->ppi_b;
+			d = m->ppi_b;
+			if((port & 2) && !(m->ppi_b & SEL)){
+				m->js_state = (m->js_state + 1) & 3;
+				m->js_timer = 0;
+				m->ppi_b |= UP | DOWN | LEFT | RIGHT | AB | STRTC;
+				if(m->js_state == 3){
+					if(m->js_buttons & BUTTON_Z)
+						m->ppi_b &= ~UP;
+					if(m->js_buttons & BUTTON_Y)
+						m->ppi_b &= ~DOWN;
+					if(m->js_buttons & BUTTON_X)
+						m->ppi_b &= ~LEFT;
+					if(m->js_buttons & BUTTON_M)
+						m->ppi_b &= ~RIGHT;
+					if(m->js_buttons & BUTTON_B)
+						m->ppi_b &= ~AB;
+					if(m->js_buttons & BUTTON_C)
+						m->ppi_b &= ~STRTC;
+				}else{
+					if(m->js_buttons & BUTTON_U)
+						m->ppi_b &= ~UP;
+					if(m->js_buttons & BUTTON_D)
+						m->ppi_b &= ~DOWN;
+					if(m->js_buttons & BUTTON_L)
+						m->ppi_b &= ~LEFT;
+					if(m->js_buttons & BUTTON_R)
+						m->ppi_b &= ~RIGHT;
+					if(m->js_buttons & BUTTON_B)
+						m->ppi_b &= ~AB;
+					if(m->js_buttons & BUTTON_C)
+						m->ppi_b &= ~STRTC;
+				}
+				m->ppi_b |= SEL;
+			}else if(!(port & 2) && (m->ppi_b & SEL)){
+				m->ppi_b |= UP | DOWN | LEFT | RIGHT | AB | STRTC;
+				if(m->js_state == 2){
+					m->ppi_b &= ~(UP | DOWN | LEFT | RIGHT);
+					if(m->js_buttons & BUTTON_A)
+						m->ppi_b &= ~AB;
+					if(m->js_buttons & BUTTON_S)
+						m->ppi_b &= ~STRTC;
+				}else if(m->js_state == 3){
+					if(m->js_buttons & BUTTON_A)
+						m->ppi_b &= ~AB;
+					if(m->js_buttons & BUTTON_S)
+						m->ppi_b &= ~STRTC;
+				}else{
+					m->ppi_b &= ~(LEFT | RIGHT);
+					if(m->js_buttons & BUTTON_U)
+						m->ppi_b &= ~UP;
+					if(m->js_buttons & BUTTON_D)
+						m->ppi_b &= ~DOWN;
+					if(m->js_buttons & BUTTON_A)
+						m->ppi_b &= ~AB;
+					if(m->js_buttons & BUTTON_S)
+						m->ppi_b &= ~STRTC;
+				}
+				m->ppi_b &= ~SEL;
+			}
+			return d;
 		case 4: /* port c */
 			d = m->ppi_c;
 			m->ppi_c &= ~VINT;
@@ -409,12 +508,12 @@ reset(Machine *m)
 	m->uart_fifo.head = 0;
 	m->uart_fifo.tail = sizeof(m->uart_fifo.buf) >> m->uart_fifo.s;
 
-	m->ppi_a = 0xff;
-	m->ppi_b = 0xff;
 	m->ppi_c = 0x01;
 
 	m->kb_fifo.head = 0;
 	m->kb_fifo.tail = sizeof(m->kb_fifo.buf) >> m->kb_fifo.s;
+
+	m->cf_status = 0;
 }
 
 void
@@ -457,6 +556,8 @@ main(int argc, char *argv[])
 	SDL_MessageBoxButtonData buttons[3];
 	SDL_AudioSpec want = {0}, have;
 	SDL_AudioDeviceID audiodev;
+	SDL_Joystick *js;
+	SDL_JoystickGUID guid;
 
 	if(argc < 3){
 		fprintf(stderr, "usage: %s romfile cffile\n", argv[0]);
@@ -489,8 +590,15 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	m->ppi_a = 0xff;
+	m->ppi_b = 0xff;
+
 	m->kb_fifo.s = 2;
 	m->uart_fifo.s = 0;
+
+	m->js_buttons = 0;
+	m->js_state = 0;
+	m->js_timer = 0;
 
 	reset(m);
 
@@ -520,7 +628,7 @@ main(int argc, char *argv[])
 	unlockpt(fds[FDS_PTY].fd);
 	puts(ptsname(fds[FDS_PTY].fd));
 
-	if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0){
+	if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) != 0){
 		SDL_Log("SDL_Init(): %s", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
@@ -568,6 +676,8 @@ main(int argc, char *argv[])
 	SNG_set_quality(m->sng, 0);
 	SDL_PauseAudioDevice(audiodev, 0);
 
+	js = NULL;
+
 	fds[FDS_SDL].fd = timerfd_create(CLOCK_MONOTONIC, 0);
 	fds[FDS_SDL].events = POLLIN;
 	it.it_interval.tv_sec = 0;
@@ -600,6 +710,11 @@ main(int argc, char *argv[])
 				m->ppi_c |= KIBF;
 				if(m->ppi_c & KINTE)
 					m->ppi_c |= KINT;
+			}
+			m->js_timer++;
+			if(m->js_timer == 5){
+				m->js_timer = 0;
+				m->js_state = 0;
 			}
 		}
 
@@ -635,9 +750,36 @@ main(int argc, char *argv[])
 				m->ppi_c |= VINT;
 
 			while(SDL_PollEvent(&event)){
-				if(event.type == SDL_KEYDOWN || event.type == SDL_KEYUP){
-					fifo_push(&m->kb_fifo,
-					          xlat[event.key.keysym.scancode] | (~event.key.state << 7));
+				if(event.type == SDL_KEYDOWN){
+					fifo_push(&m->kb_fifo, xlat[event.key.keysym.scancode]);
+				}else if(event.type == SDL_KEYUP){
+					fifo_push(&m->kb_fifo, xlat[event.key.keysym.scancode] | 0x80);
+				}else if(event.type == SDL_JOYBUTTONDOWN){
+					if(event.jbutton.button < sizeof(js_map) / sizeof(js_map[0]))
+						 m->js_buttons |= js_map[event.jbutton.button];
+				}else if(event.type == SDL_JOYBUTTONUP){
+					if(event.jbutton.button < sizeof(js_map) / sizeof(js_map[0]))
+						 m->js_buttons &= ~js_map[event.jbutton.button];
+				}else if(event.type == SDL_JOYHATMOTION){
+					m->js_buttons &= ~(BUTTON_U | BUTTON_D | BUTTON_L | BUTTON_R);
+					if(event.jhat.value & SDL_HAT_UP)
+						 m->js_buttons |= BUTTON_U;
+					if(event.jhat.value & SDL_HAT_DOWN)
+						 m->js_buttons |= BUTTON_D;
+					if(event.jhat.value & SDL_HAT_LEFT)
+						 m->js_buttons |= BUTTON_L;
+					if(event.jhat.value & SDL_HAT_RIGHT)
+						 m->js_buttons |= BUTTON_R;
+				}else if(event.type == SDL_JOYDEVICEADDED && js == NULL){
+					guid = SDL_JoystickGetDeviceGUID(event.jdevice.which);
+					if(memcmp(js_guid, &guid, sizeof(js_guid)) == 0){
+						js = SDL_JoystickOpen(event.jdevice.which);
+						if(js == NULL)
+							SDL_Log("SDL_JoystickOpen(): %s", SDL_GetError());
+					}
+				}else if(event.type == SDL_JOYDEVICEREMOVED && js != NULL){
+					SDL_JoystickClose(js);
+					js = NULL;
 				}else if(event.type == SDL_QUIT){
 					messageboxdata.flags = 0;
 					messageboxdata.window = NULL;
@@ -692,6 +834,8 @@ main(int argc, char *argv[])
 			SDL_RenderPresent(renderer);
 		}
 	}
+	if(js)
+		SDL_JoystickClose(js);
 	SDL_CloseAudioDevice(audiodev);
 	SNG_delete(m->sng);
 	SDL_DestroyTexture(texture);
