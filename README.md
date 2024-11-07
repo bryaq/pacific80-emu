@@ -28,7 +28,7 @@ It will print pseudoterminal device name if you wish to connect to computer's se
 
 # TODO
 
-- [ ] correct VBLANK interrupt rate
+- [x] interrupts
 - [x] SN76489A
 - [x] joystick
 - [x] reset

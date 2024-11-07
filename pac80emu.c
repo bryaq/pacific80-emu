@@ -695,26 +695,28 @@ main(int argc, char *argv[])
 
 		if(fds[FDS_CPU].revents & POLLIN){
 			ret = read(fds[FDS_CPU].fd, &val, sizeof(val));
-			while(cpu.cyc < 1007){
-				if(cpu.iff && (m->ppi_c & (KINT | VINT | UINT)))
-					i8080_interrupt(&cpu, 0xff);
-				i8080_step(&cpu);
-				if(cpu.halted){
-					cpu.cyc = 1007;
-					break;
+			while(val-- > 0){
+				while(cpu.cyc < 1007){
+					if(cpu.iff && (m->ppi_c & (KINT | VINT | UINT)))
+						i8080_interrupt(&cpu, 0xff);
+					i8080_step(&cpu);
+					if(cpu.halted){
+						cpu.cyc = 1007;
+						break;
+					}
 				}
-			}
-			cpu.cyc -= 1007;
-			if(!(m->ppi_c & KIBF) && fifo_count(&m->kb_fifo)){
-				m->ppi_a = fifo_pop(&m->kb_fifo);
-				m->ppi_c |= KIBF;
-				if(m->ppi_c & KINTE)
-					m->ppi_c |= KINT;
-			}
-			m->js_timer++;
-			if(m->js_timer == 5){
-				m->js_timer = 0;
-				m->js_state = 0;
+				cpu.cyc -= 1007;
+				if(!(m->ppi_c & KIBF) && fifo_count(&m->kb_fifo)){
+					m->ppi_a = fifo_pop(&m->kb_fifo);
+					m->ppi_c |= KIBF;
+					if(m->ppi_c & KINTE)
+						m->ppi_c |= KINT;
+				}
+				m->js_timer++;
+				if(m->js_timer == 5){
+					m->js_timer = 0;
+					m->js_state = 0;
+				}
 			}
 		}
 
