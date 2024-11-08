@@ -26,6 +26,8 @@ dd if=/dev/sdb of=cf.img bs=1M count=33
 
 It will print pseudoterminal device name if you wish to connect to computer's serial port.
 
+![pac80emu](pac80emu.png)
+
 # TODO
 
 - [x] interrupts
