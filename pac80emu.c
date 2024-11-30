@@ -274,6 +274,7 @@ port_in(void *userdata, uint8_t port)
 		case 5: /* illegal */
 			break;
 		}
+		break;
 	case 0x38:	/* PSG */
 	case 0x00:	/* EXT0 */
 	case 0x10:	/* EXT1 */
@@ -377,6 +378,7 @@ port_out(void *userdata, uint8_t port, uint8_t val)
 			}
 			break;
 		}
+		break;
 	case 0x38:	/* PSG */
 		SNG_writeIO(m->sng, val);
 		break;
