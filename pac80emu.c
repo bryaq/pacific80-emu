@@ -543,7 +543,7 @@ main(int argc, char *argv[])
 	int romfd, cffd, ret, pitch, x, y, buttonid;
 	struct pollfd fds[NFDS];
 	uint64_t val;
-	struct itimerspec it;
+	struct itimerspec it, stop = {0};
 	SDL_Window *window;
 	SDL_Renderer *renderer;
 	SDL_RendererInfo info;
@@ -801,7 +801,9 @@ main(int argc, char *argv[])
 					buttons[2].text = "Cancel";
 					messageboxdata.buttons = buttons;
 					messageboxdata.colorScheme = NULL;
+					timerfd_settime(fds[FDS_CPU].fd, 0, &stop, &it);
 					ret = SDL_ShowMessageBox(&messageboxdata, &buttonid);
+					timerfd_settime(fds[FDS_CPU].fd, 0, &it, NULL);
 					if(ret != 0 || buttonid == 0){
 						break;
 					}else if(buttonid == 1){
